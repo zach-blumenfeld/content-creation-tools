@@ -1,5 +1,5 @@
 # Content Creation Tools
-Work - make AI do it for you
+Work: make AI do it for you!
 
 A random collection of AI tools to automate marketing work that I am either to lazy or nerdy to do manually.
 
