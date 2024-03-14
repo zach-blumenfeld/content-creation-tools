@@ -1,0 +1,7 @@
+.env
+*.wav
+*.mp4
+*.txt
+.DS_Store
+.idea/
+
