@@ -25,10 +25,8 @@ NEO4J_PASSWORD=<YOUR_NEO4J_PASSWORD>
 
 This project contains the following services wrapped as docker containers
 
-1**API**:
-   - Uses LangChain to retrieve messaging from Neo4j and call OpenAI LLM.
-2**UI**:
-   - Simple streamlit chat user interface. Available on `localhost:8501`.
+1. **API**: Uses LangChain to retrieve messaging from Neo4j and call OpenAI LLM.
+2. **UI**: Simple streamlit chat user interface. Available on `localhost:8501`.
 
 ## Populating Database
 
