@@ -32,7 +32,7 @@ This project contains the following services wrapped as docker containers
 
 ## Populating Database
 
-Use the LLM Graph Builder to populate a Neo4j database from source marketing documents
+Use the [LLM Graph Builder](https://neo4j.com/labs/genai-ecosystem/llm-graph-builder/) to populate a Neo4j database from source marketing documents
 
 ## Contributions
 
