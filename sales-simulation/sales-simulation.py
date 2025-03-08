@@ -37,10 +37,12 @@ class Customer:
             [f"Vendor: {vendor}\nResponse: {self.messages[vendor][-1].content}" for vendor in self.messages if
              vendor != vendor_to_object]
         )
-        objection_prompt = f"Based on the following vendor responses, generate a strong objection for {vendor_to_object}:\n{context}"
+        objection_prompt = f"Based on the following vendor responses, generate a strong objection for {vendor_to_object}:\n{context} "
 
         objection_response = self.model.invoke([
-            SystemMessage(content="You are a skeptical customer analyzing vendor responses."),
+            SystemMessage(content=("You are a skeptical customer analyzing vendor responses."
+                                   "please respond with the voice of the customer, as if the customer was asking the "
+                                   "vendor directly")),
             HumanMessage(content=objection_prompt)
         ])
         return objection_response.content.strip()
@@ -53,7 +55,9 @@ class Customer:
         question_prompt = f"Based on the following conversation history with {vendor}, generate additional discovery questions:\n{history}"
 
         question_response = self.model.invoke([
-            SystemMessage(content="You are a customer seeking more clarity in a vendor discussion."),
+            SystemMessage(content=("You are a customer seeking more clarity in a vendor discussion."
+                                   "please respond with the voice of the customer, as if the customer was asking the "
+                                   "vendor directly")),
             HumanMessage(content=question_prompt)
         ])
         return question_response.content.strip()
@@ -76,12 +80,12 @@ class Customer:
         self.messages[vendor].append(AIMessage(content=response))
 
         timestamp = datetime.datetime.now().isoformat()
-        log_entry = f"## Timestamp: {timestamp}\n\n**Customer Questions:**\n{my_questions}\n\n**{vendor} Response:**\n{response}\n\n"
+        log_entry = f"## Vendor {vendor}: {timestamp} \n\n**Questions:**\n{my_questions}\n\n Response:**\n{response}\n\n"
 
         with open(self.log_file, "a", encoding="utf-8") as file:
             file.write(log_entry)
 
-    def _log_final_decision(self):
+    def _log_final_decision(self, reason='UNKNOWN'):
         """
         Read log and create a final decision based on the accumulated interactions.
         """
@@ -96,7 +100,7 @@ class Customer:
         final_decision = final_decision_response.content.strip()
 
         with open(self.log_file, "a", encoding="utf-8") as file:
-            file.write(f"# Final Decision\n\n{final_decision}\n\n")
+            file.write(f"# Final Decision\n## Reason: {reason}\n\n{final_decision}\n\n")
 
     def should_continue(self, round):
         """
@@ -104,11 +108,13 @@ class Customer:
         """
         with open(self.log_file, "r", encoding="utf-8") as file:
             log_content = file.read()
-
+        if round > 3:
+            self._log_final_decision('MAX_ITERATIONS')
+            return False
         decision_prompt = (
             "Based on the current discussions, should we continue asking for more information "
             "or have we gathered enough to make a decision? Reply with 'continue' or 'stop'. "
-            "You should do at least 2 rounds to get responses. Try not to go above 4 rounds. "
+            "You should do at least 2 rounds to get responses. Please stop no matter what after 4 rounds. "
             f"You are currently on round {round}.\n\n{log_content}"
         )
 
@@ -119,7 +125,7 @@ class Customer:
         decision = decision_response.content.strip().lower()
 
         if decision == "stop":
-            self._log_final_decision()
+            self._log_final_decision('ENOUGH_INFO')
             return False
         return True
 
@@ -170,24 +176,32 @@ class ProductMarketerArchitect:
         current_playbook = self.read_sales_playbook()
 
         # Generate sales playbook updates
-        update_prompt = f"Based on the current sales playbook, the customer question, and your response, rewrite the sales playbook accordingly.\n\nCurrent Sales Playbook:\n{current_playbook}\n\nCustomer Message: {customer_message}\n\nYour Response: {response}\n\n"
+        update_prompt = (f"Based on the current sales playbook, the customer question, and your response, rewrite the "
+                         f"sales playbook accordingly.\n\nCurrent Sales Playbook:\n{current_playbook}\n\n"
+                         f"Customer Message: {customer_message}\n\nYour Response: {response}\n\n")
         update_response = self.model.invoke([
-            SystemMessage(content="You are a strategic sales expert updating a sales playbook."),
+            SystemMessage(content="You are a strategic sales expert updating a sales playbook. The salesplaybook "
+                                  "should include a summary of everything you need to"
+                                  "- explain your unique differentiated value proposition"
+                                  "- handle common customer objects"
+                                  "- respond to common discovery questions"),
             HumanMessage(content=update_prompt)
         ])
         update_text = update_response.content
 
         # Generate a changelog entry
-        changelog_prompt = f"Summarize the changes made to the sales playbook based on the new customer conversation:\n\nLast Playbook:\n{current_playbook}\n\nCustomer Message: {customer_message}\n\nYour Response: {response}\n\nUpdated Playbook:\n{update_text}\n\n"
+        changelog_prompt = (f"Summarize the changes made to the sales playbook based on the new customer "
+                            f"conversation:\n\nLast Playbook:\n{current_playbook}\n\nCustomer Message: {customer_message}\n\nYour Response: {response}\n\nUpdated Playbook:\n{update_text}\n\n")
         changelog_response = self.model.invoke([
             SystemMessage(content="You are an expert summarizing changes to a sales playbook."),
             HumanMessage(content=changelog_prompt)
         ])
-        changelog_text = changelog_response.content
+        timestamp = datetime.datetime.now().isoformat()
+        changelog_text = f"## TimeStamp: {timestamp}\n{changelog_response.content}\n\n"
 
         # Write updates to the sales playbook
         with open(self.sales_playbook_path, "w", encoding="utf-8") as file:
-            file.write(f"{update_text}\n\n")
+            file.write(f"##{update_text}\n\n")
 
         # Write updates to the changelog
         with open(self.changelog_path, "a", encoding="utf-8") as file:
