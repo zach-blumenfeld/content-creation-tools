@@ -1,3 +1,5 @@
+simulated-content/
+agent-info.json
 .env
 *.wav
 *.mp4

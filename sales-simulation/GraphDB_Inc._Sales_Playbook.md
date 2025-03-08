@@ -1,2 +1,0 @@
-# GraphDB Inc. Sales Playbook
-

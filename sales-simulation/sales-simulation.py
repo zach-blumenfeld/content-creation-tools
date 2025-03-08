@@ -1,9 +1,11 @@
 import getpass
 import json
+import datetime
 
 import openai
 import os
 from dotenv import load_dotenv
+from langchain_core.messages import AIMessage
 from langchain_openai import ChatOpenAI
 from langchain.schema import SystemMessage, HumanMessage
 from langchain_community.tools import TavilySearchResults
@@ -13,24 +15,114 @@ load_dotenv()
 if not os.environ.get("TAVILY_API_KEY"):
     os.environ["TAVILY_API_KEY"] = getpass.getpass("Tavily API key:\n")
 
+
 # Define the Customer agent
 class Customer:
-    def __init__(self, initial_prompt):
-        self.messages = [HumanMessage(content=initial_prompt)]
+    def __init__(self, initial_prompt, competing_vendors):
+        self.initial_prompt = initial_prompt
+        self.messages = {cv: [HumanMessage(content=initial_prompt)] for cv in competing_vendors}
         self.model = ChatOpenAI(model_name="gpt-4o")
+        self.log_file = "simulated-content/customer-log.md"
 
-    def respond(self, response):
-        self.messages.append(HumanMessage(content=response))
-        return self.messages[-1].content
+        # Ensure log file exists
+        if not os.path.exists(self.log_file):
+            with open(self.log_file, "w", encoding="utf-8") as file:
+                file.write("# Customer Interaction Log\n\n")
 
-    def should_continue(self):
-        decision_prompt = "Based on the current discussions, should the customer continue asking for more information or have they gathered enough to make a decision? Reply with 'continue' or 'stop'."
+    def _make_objections(self, vendor_to_object):
+        """
+        Develop objections for the specified vendor based on responses from other vendors in the last round.
+        """
+        context = "\n\n".join(
+            [f"Vendor: {vendor}\nResponse: {self.messages[vendor][-1].content}" for vendor in self.messages if
+             vendor != vendor_to_object]
+        )
+        objection_prompt = f"Based on the following vendor responses, generate a strong objection for {vendor_to_object}:\n{context}"
+
+        objection_response = self.model.invoke([
+            SystemMessage(content="You are a skeptical customer analyzing vendor responses."),
+            HumanMessage(content=objection_prompt)
+        ])
+        return objection_response.content.strip()
+
+    def _create_further_discovery_questions(self, vendor):
+        """
+        Generate further discovery questions for the vendor based on the conversation history.
+        """
+        history = "\n\n".join([msg.content for msg in self.messages[vendor]])
+        question_prompt = f"Based on the following conversation history with {vendor}, generate additional discovery questions:\n{history}"
+
+        question_response = self.model.invoke([
+            SystemMessage(content="You are a customer seeking more clarity in a vendor discussion."),
+            HumanMessage(content=question_prompt)
+        ])
+        return question_response.content.strip()
+
+    def create_questions(self, vendor, round):
+        """
+        Generate objections and discovery questions for a given vendor.
+        """
+        if round < 2:
+            return self.initial_prompt
+        objections = self._make_objections(vendor)
+        discovery_questions = self._create_further_discovery_questions(vendor)
+        return f"Objections:\n{objections}\n\nDiscovery Questions:\n{discovery_questions}"
+
+    def log(self, vendor, my_questions, response):
+        """
+        Log the customer’s questions and the vendor’s response with a timestamp.
+        """
+        self.messages[vendor].append(HumanMessage(content=my_questions))
+        self.messages[vendor].append(AIMessage(content=response))
+
+        timestamp = datetime.datetime.now().isoformat()
+        log_entry = f"## Timestamp: {timestamp}\n\n**Customer Questions:**\n{my_questions}\n\n**{vendor} Response:**\n{response}\n\n"
+
+        with open(self.log_file, "a", encoding="utf-8") as file:
+            file.write(log_entry)
+
+    def _log_final_decision(self):
+        """
+        Read log and create a final decision based on the accumulated interactions.
+        """
+        with open(self.log_file, "r", encoding="utf-8") as file:
+            log_content = file.read()
+
+        decision_prompt = f"Based on the following customer-vendor interactions, generate a final decision including a clear choice and justifications:\n\n{log_content}"
+        final_decision_response = self.model.invoke([
+            SystemMessage(content="You are a customer making a final decision based on vendor interactions."),
+            HumanMessage(content=decision_prompt)
+        ])
+        final_decision = final_decision_response.content.strip()
+
+        with open(self.log_file, "a", encoding="utf-8") as file:
+            file.write(f"# Final Decision\n\n{final_decision}\n\n")
+
+    def should_continue(self, round):
+        """
+        Determine whether the customer should continue based on the log or make a final decision.
+        """
+        with open(self.log_file, "r", encoding="utf-8") as file:
+            log_content = file.read()
+
+        decision_prompt = (
+            "Based on the current discussions, should we continue asking for more information "
+            "or have we gathered enough to make a decision? Reply with 'continue' or 'stop'. "
+            "You should do at least 2 rounds to get responses. Try not to go above 4 rounds. "
+            f"You are currently on round {round}.\n\n{log_content}"
+        )
+
         decision_response = self.model.invoke([
-                SystemMessage(content="You are a customer evaluating AI solutions."),
-                HumanMessage(content=decision_prompt)
-            ])
+            SystemMessage(content="You are a customer evaluating solutions."),
+            HumanMessage(content=decision_prompt)
+        ])
         decision = decision_response.content.strip().lower()
-        return decision == "continue"
+
+        if decision == "stop":
+            self._log_final_decision()
+            return False
+        return True
+
 
 # Define the Product Marketer and Architect agent
 class ProductMarketerArchitect:
@@ -39,8 +131,8 @@ class ProductMarketerArchitect:
         self.messages = [SystemMessage(content=f"You are a product marketer for {product_name}.")]
         self.messages.append(HumanMessage(content=initial_prompt))
         self.model = ChatOpenAI(model_name="gpt-4o")
-        self.sales_playbook_path = f"{product_name.replace(' ', '_')}_Sales_Playbook.md"
-        self.changelog_path = f"{product_name.replace(' ', '_')}_Changelog.md"
+        self.sales_playbook_path = f"simulated-content/{product_name.replace(' ', '_')}_Sales_Playbook.md"
+        self.changelog_path = f"simulated-content/{product_name.replace(' ', '_')}_Changelog.md"
         self.search_tool = TavilySearchResults(
             max_results=5,
             search_depth="advanced",
@@ -63,47 +155,84 @@ class ProductMarketerArchitect:
             with open(self.changelog_path, "w", encoding="utf-8") as file:
                 file.write(f"# {self.product_name} Sales Playbook Changelog\n\n")
 
+    def read_sales_playbook(self):
+        if os.path.exists(self.sales_playbook_path):
+            with open(self.sales_playbook_path, "r", encoding="utf-8") as file:
+                return file.read()
+        return ""
+
     def web_search(self, query):
         search_results = self.search_tool.run(query)
         return json.dumps(search_results[:5], indent=2)  # Convert the first 5 results to a formatted JSON string
 
     def update_sales_playbook(self, customer_message, response):
-        update_prompt = f"Based on the customer question and your response, suggest updates to the sales playbook.\n\nCustomer Message: {customer_message}\n\nYour Response: {response}\n\n"
+        # Read current sales playbook
+        current_playbook = self.read_sales_playbook()
+
+        # Generate sales playbook updates
+        update_prompt = f"Based on the current sales playbook, the customer question, and your response, rewrite the sales playbook accordingly.\n\nCurrent Sales Playbook:\n{current_playbook}\n\nCustomer Message: {customer_message}\n\nYour Response: {response}\n\n"
         update_response = self.model.invoke([
             SystemMessage(content="You are a strategic sales expert updating a sales playbook."),
             HumanMessage(content=update_prompt)
         ])
-        print(update_response)
         update_text = update_response.content
 
-        with open(self.sales_playbook_path, "a", encoding="utf-8") as file:
+        # Generate a changelog entry
+        changelog_prompt = f"Summarize the changes made to the sales playbook based on the new customer conversation:\n\nLast Playbook:\n{current_playbook}\n\nCustomer Message: {customer_message}\n\nYour Response: {response}\n\nUpdated Playbook:\n{update_text}\n\n"
+        changelog_response = self.model.invoke([
+            SystemMessage(content="You are an expert summarizing changes to a sales playbook."),
+            HumanMessage(content=changelog_prompt)
+        ])
+        changelog_text = changelog_response.content
+
+        # Write updates to the sales playbook
+        with open(self.sales_playbook_path, "w", encoding="utf-8") as file:
             file.write(f"{update_text}\n\n")
 
+        # Write updates to the changelog
         with open(self.changelog_path, "a", encoding="utf-8") as file:
-            file.write(f"Updated sales playbook based on new customer conversation.\n\n{update_text}\n\n")
+            file.write(f"Updated sales playbook based on new customer conversation.\n\n{changelog_text}\n\n")
 
-    def converse(self, customer_message):
-        search_query = f"{self.product_name} for AI agentic systems"
+    def converse_with_customer(self, customer_message):
+        # Read sales playbook
+        sales_playbook_content = self.read_sales_playbook()
+
+        # Develop search query
+        search_query_prompt = f"Based on the sales playbook content, develop the best search query to gather missing or supporting information for {self.product_name}.\n\nSales Playbook:\n{sales_playbook_content}\n\n"
+        search_query = self.model.invoke([
+            SystemMessage(content="You are a marketing expert optimizing search queries."),
+            HumanMessage(content=search_query_prompt)
+        ]).content.strip()
+
+        # Perform web search
         additional_info = self.web_search(search_query)
 
+        # Combine information for response
         self.messages.append(HumanMessage(content=customer_message))
-        response = self.model.invoke(self.messages + [HumanMessage(content=f"Here is additional information from the web:\n{additional_info}")])
+        response = self.model.invoke(
+            self.messages + [HumanMessage(content=f"Here is your sales playbook: \n{sales_playbook_content}"),
+                             HumanMessage(content=f"Here is additional information from the web:\n{additional_info}")])
         self.messages.append(response)
 
         self.update_sales_playbook(customer_message, response.content)
 
         return response.content
 
+
 # Conversation simulation
-customer_prompt = "I am evaluating a solution for my Agentic AI system. Convince me why your approach is best."
-customer = Customer(customer_prompt)
+with open("agent-info.json", "r", encoding="utf-8") as file:
+    agent_info = json.load(file)
+
+print('========= agent_info ====================')
+print(agent_info)
+customer_prompt = agent_info['customer']['initial_prompt']
+customer = Customer(customer_prompt, [competitor['product_name'] for competitor in agent_info['competitors']])
 
 competitors = [
-    ProductMarketerArchitect("Semantic Layer Co.", "Explain why a semantic layer is essential for AI agentic systems."),
-    ProductMarketerArchitect("GraphDB Inc.", "Explain why a graph database is the superior choice for AI agentic systems."),
-]
+    ProductMarketerArchitect(product_name=competitor['product_name'], initial_prompt=competitor['initial_prompt']) for
+    competitor in agent_info['competitors']]
 
-conversation_log = "# AI Agent Evaluation Conversations\n\n"
+conversation_log = "# Evaluation Conversations\n\n"
 iteration = 1
 
 while True:
@@ -112,43 +241,16 @@ while True:
     conversation_log += f"## Iteration {iteration}\n\n"
     for competitor in competitors:
         print(f"\n--------------------")
-        print(f"Competitor: {competitor}")
-        conversation_log += f"### {competitor.product_name}\n\n"
-        conversation_log += f"**Customer:** {customer.messages[-1].content}\n\n"
-        print(f"competitor responding...")
-        response = competitor.converse(customer.messages[-1].content)
-        conversation_log += f"**{competitor.product_name}:** {response}\n\n"
-
-        # Customer refines objections
-        print(f"customer objecting...")
-        objection_prompt = f"Given the following response, what would be a strong objection or counterpoint from a skeptical customer?\n\n{response}"
-        objection_response = customer.model.invoke([
-            SystemMessage(content="You are a skeptical customer analyzing the response."),
-            HumanMessage(content=objection_prompt)
-        ])
-
-        objection = objection_response.content
-        conversation_log += f"**Customer Objection:** {objection}\n\n"
-        customer.respond(response + "\n\n" + objection)
-
-    if not customer.should_continue():
+        print(f"Competitor: {competitor.product_name}")
+        print(f"customer creating question(s)...")
+        questions = customer.create_questions(competitor.product_name, iteration)
+        print(f"customer asking:\n{questions}")
+        print(f"competitor responding & refining playbook...")
+        response = competitor.converse_with_customer(questions)
+        print(f"customer logging...")
+        customer.log(competitor.product_name, questions, response)
+    print(f"customer evaluating....")
+    if not customer.should_continue(iteration):
+        print(f"customer reached final decision")
         break
     iteration += 1
-
-print(f"===================")
-print(f"Final Decision Reached...")
-# Generate final decision
-final_decision_prompt = f"Summarize the key points from these conversations and determine which solution best fits the customer’s needs. Justify the final choice.\n\n{conversation_log}"
-final_decision_response = customer.model.invoke([
-    SystemMessage(content="You are an impartial analyst evaluating the conversation."),
-    HumanMessage(content=final_decision_prompt)
-])
-
-final_decision = final_decision_response.content
-conversation_log += f"# Final Decision\n\n{final_decision}\n"
-
-# Save conversation log to markdown file
-with open("conversation_log.md", "w", encoding="utf-8") as file:
-    file.write(conversation_log)
-
-print("Conversation log saved to conversation_log.md")

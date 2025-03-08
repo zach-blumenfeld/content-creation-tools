@@ -1,0 +1,15 @@
+{
+  "customer": {
+    "initial_prompt": "I am evaluating a solution for my Agentic AI system. Convince me why your approach is best."
+  },
+  "competitors": [
+    {
+      "product_name":"Semantic Layer Co.",
+      "initial_prompt": "Explain why a semantic layer is essential for AI agentic systems."
+    },
+    {
+      "product_name":"MetaData Inc.",
+      "initial_prompt": "Explain why a metadata catalog, instead of semantic layer, is the superior choice for AI agentic systems."
+    }
+  ]
+}
