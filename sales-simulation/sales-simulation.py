@@ -5,7 +5,7 @@ import openai
 import os
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
-from langchain.schema import SystemMessage, AIMessage, HumanMessage
+from langchain.schema import SystemMessage, HumanMessage
 from langchain_community.tools import TavilySearchResults
 
 # Load environment variables from .env file
@@ -17,21 +17,19 @@ if not os.environ.get("TAVILY_API_KEY"):
 class Customer:
     def __init__(self, initial_prompt):
         self.messages = [HumanMessage(content=initial_prompt)]
+        self.model = ChatOpenAI(model_name="gpt-4o")
 
     def respond(self, response):
-        self.messages.append(AIMessage(content=response))
+        self.messages.append(HumanMessage(content=response))
         return self.messages[-1].content
 
     def should_continue(self):
         decision_prompt = "Based on the current discussions, should the customer continue asking for more information or have they gathered enough to make a decision? Reply with 'continue' or 'stop'."
-        decision_response = openai.ChatCompletion.create(
-            model="gpt-4o",
-            messages=[
-                {"role": "system", "content": "You are a customer evaluating AI solutions."},
-                {"role": "user", "content": decision_prompt}
-            ]
-        )
-        decision = decision_response['choices'][0]['message']['content'].strip().lower()
+        decision_response = self.model.invoke([
+                SystemMessage(content="You are a customer evaluating AI solutions."),
+                HumanMessage(content=decision_prompt)
+            ])
+        decision = decision_response.content.strip().lower()
         return decision == "continue"
 
 # Define the Product Marketer and Architect agent
@@ -71,14 +69,12 @@ class ProductMarketerArchitect:
 
     def update_sales_playbook(self, customer_message, response):
         update_prompt = f"Based on the customer question and your response, suggest updates to the sales playbook.\n\nCustomer Message: {customer_message}\n\nYour Response: {response}\n\n"
-        update_response = openai.ChatCompletion.create(
-            model="gpt-4o",
-            messages=[
-                {"role": "system", "content": "You are a strategic sales expert updating a sales playbook."},
-                {"role": "user", "content": update_prompt}
-            ]
-        )
-        update_text = update_response['choices'][0]['message']['content']
+        update_response = self.model.invoke([
+            SystemMessage(content="You are a strategic sales expert updating a sales playbook."),
+            HumanMessage(content=update_prompt)
+        ])
+        print(update_response)
+        update_text = update_response.content
 
         with open(self.sales_playbook_path, "a", encoding="utf-8") as file:
             file.write(f"{update_text}\n\n")
@@ -111,24 +107,27 @@ conversation_log = "# AI Agent Evaluation Conversations\n\n"
 iteration = 1
 
 while True:
+    print(f"\n\n===================")
+    print(f"Iteration: {iteration}")
     conversation_log += f"## Iteration {iteration}\n\n"
     for competitor in competitors:
+        print(f"\n--------------------")
+        print(f"Competitor: {competitor}")
         conversation_log += f"### {competitor.product_name}\n\n"
         conversation_log += f"**Customer:** {customer.messages[-1].content}\n\n"
+        print(f"competitor responding...")
         response = competitor.converse(customer.messages[-1].content)
         conversation_log += f"**{competitor.product_name}:** {response}\n\n"
 
         # Customer refines objections
+        print(f"customer objecting...")
         objection_prompt = f"Given the following response, what would be a strong objection or counterpoint from a skeptical customer?\n\n{response}"
-        objection_response = openai.ChatCompletion.create(
-            model="gpt-4o",
-            messages=[
-                {"role": "system", "content": "You are a skeptical customer analyzing the response."},
-                {"role": "user", "content": objection_prompt}
-            ]
-        )
+        objection_response = customer.model.invoke([
+            SystemMessage(content="You are a skeptical customer analyzing the response."),
+            HumanMessage(content=objection_prompt)
+        ])
 
-        objection = objection_response['choices'][0]['message']['content']
+        objection = objection_response.content
         conversation_log += f"**Customer Objection:** {objection}\n\n"
         customer.respond(response + "\n\n" + objection)
 
@@ -136,17 +135,16 @@ while True:
         break
     iteration += 1
 
+print(f"===================")
+print(f"Final Decision Reached...")
 # Generate final decision
 final_decision_prompt = f"Summarize the key points from these conversations and determine which solution best fits the customer’s needs. Justify the final choice.\n\n{conversation_log}"
-final_decision_response = openai.ChatCompletion.create(
-    model="gpt-4o",
-    messages=[
-        {"role": "system", "content": "You are an impartial analyst evaluating the conversation."},
-        {"role": "user", "content": final_decision_prompt}
-    ]
-)
+final_decision_response = customer.model.invoke([
+    SystemMessage(content="You are an impartial analyst evaluating the conversation."),
+    HumanMessage(content=final_decision_prompt)
+])
 
-final_decision = final_decision_response['choices'][0]['message']['content']
+final_decision = final_decision_response.content
 conversation_log += f"# Final Decision\n\n{final_decision}\n"
 
 # Save conversation log to markdown file
