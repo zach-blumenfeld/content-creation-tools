@@ -44,12 +44,16 @@ class Customer:
             [f"Vendor: {vendor}\nResponse: {self.messages[vendor][-1].content}" for vendor in self.messages if
              vendor != vendor_to_object]
         )
-        objection_prompt = f"Based on the following vendor responses, generate a strong objection for {vendor_to_object}:\n{context} "
-
+        history = '\n'.join([m.content for m in self.messages[vendor_to_object]])
+        objection_prompt = (f"Based on the below discussions with {vendor_to_object} and the context from competing vendors, generate strong objections for {vendor_to_object}:"
+                            f"\n\n# Discussions with {vendor_to_object}\n{history}"
+                            f"\n\n# Competing Vendor Context\n{context}")
+        #print("======= objection_prompt =========")
+        #print(objection_prompt)
         objection_response = self.model.invoke([
-            SystemMessage(content=("You are a skeptical customer analyzing vendor responses."
-                                   "please respond with the voice of the customer, as if the customer was asking the "
-                                   "vendor directly")),
+            SystemMessage(content=("You are a skeptical customer analyzing vendor responses. "
+                                   f"You have been chatting with {vendor_to_object} about your inquery: {self.initial_prompt}.\n"
+                                   f"please respond with the voice of the customer, as if you was asking {vendor_to_object} directly.")),
             HumanMessage(content=objection_prompt)
         ])
         return objection_response.content.strip()
@@ -59,12 +63,12 @@ class Customer:
         Generate further discovery questions for the vendor based on the conversation history.
         """
         history = "\n\n".join([msg.content for msg in self.messages[vendor]])
-        question_prompt = f"Based on the following conversation history with {vendor}, generate additional discovery questions:\n{history}"
-
+        question_prompt = f"Based on the following conversation history with {vendor}, generate additional discovery questions for them:\n{history}"
+        #print("======= discovery_prompt =========")
+        #print(question_prompt)
         question_response = self.model.invoke([
-            SystemMessage(content=("You are a customer seeking more clarity in a vendor discussion."
-                                   "please respond with the voice of the customer, as if the customer was asking the "
-                                   "vendor directly")),
+            SystemMessage(content=(f"You are a customer seeking more clarity in discussions with {vendor} about your inquiry: {self.initial_prompt}. "
+                                   f"Please respond with the voice of the customer, as if the customer was asking the {vendor} directly. ")),
             HumanMessage(content=question_prompt)
         ])
         return question_response.content.strip()
@@ -177,7 +181,7 @@ class ProductMarketerArchitect:
 
     def web_search(self, query):
         search_results = self.search_tool.invoke({"query": query})
-        res = json.dumps(search_results[:5], indent=2) # Convert the first 5 results to a formatted JSON string
+        res = json.dumps(search_results[:5], indent=2)  # Convert the first 5 results to a formatted JSON string
         return res
 
     def update_sales_playbook(self, customer_message, response):
@@ -218,10 +222,23 @@ class ProductMarketerArchitect:
             file.write(f"Updated sales playbook based on new customer conversation.\n\n{changelog_text}\n\n")
 
     def converse_with_customer(self, customer_message):
-        # Read sales playbook
-        sales_playbook_content = self.read_sales_playbook()
+        print("\t summarizing previous conversation history....")
+        # Summarize previous messages
+        conversation_summary_prompt = (
+            "Summarize the key points and objections from the following conversation history "
+            "in a concise manner for context preservation. Keep it under 300 tokens.\n\n"
+            f"Conversation History:\n{self.messages}"
+        )
+
+        summary_response = self.model.invoke([
+            SystemMessage(content="You are a helpful assistant summarizing a conversation."),
+            HumanMessage(content=conversation_summary_prompt)
+        ])
+        summarized_history = summary_response.content.strip()
 
         print("\t conducting web searches....")
+        # Read sales playbook
+        sales_playbook_content = self.read_sales_playbook()
         # Develop search query
         search_query_prompt = (f"Based on the sales playbook content, develop the best search queries to gather "
                                f"missing or supporting information for {self.product_name}."
@@ -240,12 +257,14 @@ class ProductMarketerArchitect:
         print("\t formulating response....")
         # Combine information for response
         self.messages.append(HumanMessage(content=customer_message))
-        response = self.model.invoke(
-            self.messages + [HumanMessage(content=f"Here is your sales playbook: \n{sales_playbook_content}"),
-                             HumanMessage(content=f"Here is additional information from the web:\n{additional_info}")])
+        response = self.model.invoke([
+            HumanMessage(content=f"Customer Questions: \n{customer_message}"),
+            HumanMessage(content=f"Here is a summary of your previous conversation so far:\n{summarized_history}"),
+            HumanMessage(content=f"Here is your sales playbook: \n{sales_playbook_content}"),
+            HumanMessage(content=f"Here is additional information from the web:\n{additional_info}")])
         self.messages.append(response)
 
-        print("\t uopdating sales playbook....")
+        print("\t updating sales playbook....")
         self.update_sales_playbook(customer_message, response.content)
 
         return response.content
@@ -264,13 +283,11 @@ competitors = [
     ProductMarketerArchitect(product_name=competitor['product_name'], initial_prompt=competitor['initial_prompt']) for
     competitor in agent_info['competitors']]
 
-conversation_log = "# Evaluation Conversations\n\n"
 iteration = 1
 
 while True:
     print(f"\n\n===================")
     print(f"Iteration: {iteration}")
-    conversation_log += f"## Iteration {iteration}\n\n"
     for competitor in competitors:
         print(f"\n--------------------")
         print(f"Competitor: {competitor.product_name}")
