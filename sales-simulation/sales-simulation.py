@@ -1,6 +1,7 @@
 import getpass
 import json
 import datetime
+from typing import List
 
 import openai
 import os
@@ -9,11 +10,17 @@ from langchain_core.messages import AIMessage
 from langchain_openai import ChatOpenAI
 from langchain.schema import SystemMessage, HumanMessage
 from langchain_community.tools import TavilySearchResults
+from pydantic import BaseModel, Field
+from tqdm import tqdm
 
 # Load environment variables from .env file
 load_dotenv()
 if not os.environ.get("TAVILY_API_KEY"):
     os.environ["TAVILY_API_KEY"] = getpass.getpass("Tavily API key:\n")
+
+
+class Queries(BaseModel):
+    queries: List[str] = Field(description="list of queries strings to run")
 
 
 # Define the Customer agent
@@ -137,6 +144,7 @@ class ProductMarketerArchitect:
         self.messages = [SystemMessage(content=f"You are a product marketer for {product_name}.")]
         self.messages.append(HumanMessage(content=initial_prompt))
         self.model = ChatOpenAI(model_name="gpt-4o")
+        self.query_creation_model = ChatOpenAI(model_name="gpt-4o").with_structured_output(Queries)
         self.sales_playbook_path = f"simulated-content/{product_name.replace(' ', '_')}_Sales_Playbook.md"
         self.changelog_path = f"simulated-content/{product_name.replace(' ', '_')}_Changelog.md"
         self.search_tool = TavilySearchResults(
@@ -168,8 +176,9 @@ class ProductMarketerArchitect:
         return ""
 
     def web_search(self, query):
-        search_results = self.search_tool.run(query)
-        return json.dumps(search_results[:5], indent=2)  # Convert the first 5 results to a formatted JSON string
+        search_results = self.search_tool.invoke({"query": query})
+        res = json.dumps(search_results[:5], indent=2) # Convert the first 5 results to a formatted JSON string
+        return res
 
     def update_sales_playbook(self, customer_message, response):
         # Read current sales playbook
@@ -181,10 +190,11 @@ class ProductMarketerArchitect:
                          f"Customer Message: {customer_message}\n\nYour Response: {response}\n\n")
         update_response = self.model.invoke([
             SystemMessage(content="You are a strategic sales expert updating a sales playbook. The salesplaybook "
-                                  "should include a summary of everything you need to"
-                                  "- explain your unique differentiated value proposition"
-                                  "- handle common customer objects"
-                                  "- respond to common discovery questions"),
+                                  "should include a summary of everything you need to\n"
+                                  "- explain your unique differentiated value proposition\n"
+                                  "- handle common customer objects\n"
+                                  "- respond to common discovery questions\n"
+                                  "Make sure to cite sources where possible so we can trace information"),
             HumanMessage(content=update_prompt)
         ])
         update_text = update_response.content
@@ -211,16 +221,23 @@ class ProductMarketerArchitect:
         # Read sales playbook
         sales_playbook_content = self.read_sales_playbook()
 
+        print("\t conducting web searches....")
         # Develop search query
-        search_query_prompt = f"Based on the sales playbook content, develop the best search query to gather missing or supporting information for {self.product_name}.\n\nSales Playbook:\n{sales_playbook_content}\n\n"
-        search_query = self.model.invoke([
+        search_query_prompt = (f"Based on the sales playbook content, develop the best search queries to gather "
+                               f"missing or supporting information for {self.product_name}."
+                               f"\n\nSales Playbook:\n{sales_playbook_content}\n\n. Limit to 5 queries max")
+        search_queries = self.query_creation_model.invoke([
             SystemMessage(content="You are a marketing expert optimizing search queries."),
             HumanMessage(content=search_query_prompt)
-        ]).content.strip()
+        ])
 
         # Perform web search
-        additional_info = self.web_search(search_query)
+        additional_info = ""
+        for search_query in tqdm(search_queries.queries, desc="Fetching web search results", unit="query"):
+            result = self.web_search(search_query)
+            additional_info += f"\n\n## {search_query}\n{result}"
 
+        print("\t formulating response....")
         # Combine information for response
         self.messages.append(HumanMessage(content=customer_message))
         response = self.model.invoke(
@@ -228,6 +245,7 @@ class ProductMarketerArchitect:
                              HumanMessage(content=f"Here is additional information from the web:\n{additional_info}")])
         self.messages.append(response)
 
+        print("\t uopdating sales playbook....")
         self.update_sales_playbook(customer_message, response.content)
 
         return response.content
